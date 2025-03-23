@@ -1,0 +1,14 @@
+[package]
+name = "jetstream2meili"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.97"
+atrium-api = { version = "0.24.7", default-features = false, features = [
+    "namespace-appbsky",
+] }
+jetstream-oxide = "0.1.1"
+meilisearch-sdk = "0.28.0"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.44.1", features = ["full", "sync", "time"] }
