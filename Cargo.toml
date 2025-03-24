@@ -12,3 +12,4 @@ jetstream-oxide = "0.1.1"
 meilisearch-sdk = "0.28.0"
 serde = { version = "1.0.219", features = ["derive"] }
 tokio = { version = "1.44.1", features = ["full", "sync", "time"] }
+url = { version = "2.5.4", features = ["serde"] }

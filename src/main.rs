@@ -6,19 +6,22 @@ use jetstream_oxide::{
 };
 use meilisearch_sdk::client::*;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct BskyPost {
-    cid: String,
+    rkey: String,
     text: String,
     mentions: Vec<String>,
     tags: Vec<String>,
     langs: Vec<String>,
     created_at_timestamp: i64,
+    // https://bsky.app/profile/did:plc:olsofbpplu7b2hd7amjxrei5/post/3ll2v3rx4ss23
+    link: Url,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     let collection: Nsid = "app.bsky.feed.post".parse().unwrap();
     let config = JetstreamConfig {
@@ -29,7 +32,8 @@ async fn main() -> anyhow::Result<()> {
         cursor: None,
     };
 
-    let meili_client = Client::new("http://localhost:7700", Option::<String>::None)?;
+    let meili_client =
+        Client::new("http://localhost:7700", Some("p6aa7k2eUniSASiyeLBDnWkmA8NVuoWkvscqA5NTQKA"))?;
     let jetstream = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
 
@@ -43,45 +47,56 @@ async fn main() -> anyhow::Result<()> {
 
     eprintln!("Listening for '{:?}' events", collection);
 
-    let mut posts_sent = 0;
+    let mut cache = Vec::new();
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(commit) = event {
             match commit {
-                CommitEvent::Create { info: _, commit } => {
+                CommitEvent::Create { info, commit } | CommitEvent::Update { info, commit } => {
                     if let AppBskyFeedPost(record) = commit.record {
                         let record = record.data;
-                        bsky_posts
-                            .add_documents(
-                                &[BskyPost {
-                                    cid: commit.cid.as_ref().to_string(),
-                                    langs: record.langs.map_or_else(Vec::new, |langs| {
-                                        langs
-                                            .into_iter()
-                                            .map(|lang| lang.as_ref().as_str().to_string())
-                                            .collect()
-                                    }),
-                                    text: record.text,
-                                    mentions: Vec::new(),
-                                    tags: Vec::new(),
-                                    created_at_timestamp: record.created_at.as_ref().timestamp(),
-                                }],
-                                Some("cid"),
-                            )
-                            .await?;
+                        let link = format!(
+                            "https://bsky.app/profile/{did}/post/{rkey}",
+                            did = info.did.as_str(),
+                            rkey = commit.info.rkey,
+                        );
+                        let post = BskyPost {
+                            rkey: commit.info.rkey.to_string(),
+                            langs: record.langs.map_or_else(Vec::new, |langs| {
+                                langs
+                                    .into_iter()
+                                    .map(|lang| lang.as_ref().as_str().to_string())
+                                    .collect()
+                            }),
+                            text: record.text,
+                            mentions: record.entities.map_or_else(Vec::new, |entities| {
+                                entities
+                                    .into_iter()
+                                    .flat_map(|entity| {
+                                        if entity.data.r#type == "mention" {
+                                            Some(entity.data.value)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
+                            }),
+                            tags: record.tags.unwrap_or_default(),
+                            created_at_timestamp: record.created_at.as_ref().timestamp(),
+                            link: Url::parse(&link).unwrap(),
+                        };
 
-                        posts_sent += 1;
-                        if posts_sent % 1000 == 0 {
-                            eprintln!("{posts_sent} posts sent");
+                        cache.push(post);
+
+                        if cache.len() == 20 {
+                            bsky_posts.add_or_update(&cache, Some("rkey")).await?;
+                            cache.clear();
                         }
                     }
                 }
-                // CommitEvent::Delete { info: _, commit } => {
-                //     // println!("A post has been deleted. ({})", commit.rkey);
-                //     if let AppBskyFeedPost(record) = commit.record {
-                //         // bsky_posts.delete_document(record)
-                //     }
-                // }
-                _ => (),
+                CommitEvent::Delete { info: _, commit } => {
+                    let rkey = commit.rkey.to_string();
+                    bsky_posts.delete_document(rkey).await.unwrap();
+                }
             }
         }
     }
