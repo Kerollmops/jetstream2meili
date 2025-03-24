@@ -19,7 +19,14 @@ async fn main() -> anyhow::Result<()> {
     let bsky_posts = meili_client.index("bsky-posts");
     bsky_posts.set_searchable_attributes(&["text"]).await?;
     bsky_posts
-        .set_filterable_attributes(&["rkey", "createdAtTimestamp", "mentions", "tags", "lang"])
+        .set_filterable_attributes(&[
+            "rkey",
+            "createdAtTimestamp",
+            "mentions",
+            "tags",
+            "lang",
+            "likes",
+        ])
         .await?;
     bsky_posts.set_sortable_attributes(&["createdAtTimestamp"]).await?;
     bsky_posts.set_proximity_precision("byAttribute".into()).await.unwrap();
