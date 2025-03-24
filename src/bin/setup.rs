@@ -36,12 +36,12 @@ async fn main() -> anyhow::Result<()> {
 
     let raw_client = reqwest::Client::new();
     let url = Url::parse(&meili_url)?.join("experimental-features")?;
-    let mut request = raw_client.put(url);
+    let mut request = raw_client.patch(url);
     request = request.json(&json!({ "editDocumentsByFunction": true }));
     if let Some(key) = meili_api_key {
         request = request.bearer_auth(key);
     }
-    request.send().await?;
+    request.send().await?.error_for_status()?;
     eprintln!("Enabled the editDocumentsByFunction experimental feature");
 
     Ok(())
