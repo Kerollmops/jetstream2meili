@@ -38,11 +38,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let client = reqwest::Client::new();
-    let url = Url::parse(&meili_url)?
-        .join("indexes")?
-        .join(&meili_index)?
-        .join("documents")?
-        .join("edit")?;
+    let mut url = Url::parse(&meili_url)?;
+    url.set_path(&format!("/indexes/{meili_index}/documents/edit"));
     let mut request = client.post(url);
     if let Some(key) = meili_api_key {
         request = request.bearer_auth(key);
@@ -83,12 +80,12 @@ async fn main() -> anyhow::Result<()> {
             if let Some(increases) = increases {
                 let mut request = request.try_clone().unwrap();
                 request = request.json(&increases);
-                request.send().await?;
+                request.send().await?.error_for_status()?;
             }
             if let Some(decreases) = decreases {
                 let mut request = request.try_clone().unwrap();
                 request = request.json(&decreases);
-                request.send().await?;
+                request.send().await?.error_for_status()?;
             }
         }
     }

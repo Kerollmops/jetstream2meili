@@ -48,14 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let meili_client = Client::new(meili_url, meili_api_key)?;
     let jetstream = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
-
     let bsky_posts = meili_client.index(meili_index);
-    bsky_posts.set_searchable_attributes(&["text"]).await?;
-    bsky_posts
-        .set_filterable_attributes(&["createdAtTimestamp", "mentions", "tags", "lang"])
-        .await?;
-    bsky_posts.set_sortable_attributes(&["createdAtTimestamp"]).await?;
-    bsky_posts.set_proximity_precision("byAttribute".into()).await.unwrap();
 
     eprintln!("Listening for '{:?}' events", collection);
 
