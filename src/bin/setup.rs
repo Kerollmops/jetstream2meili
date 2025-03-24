@@ -9,14 +9,16 @@ struct Args {
     meili_url: String,
     #[arg(long)]
     meili_api_key: Option<String>,
+    #[arg(long, default_value = "bsky-posts")]
+    meili_index: String,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    let Args { meili_url, meili_api_key } = Args::parse();
+    let Args { meili_url, meili_api_key, meili_index } = Args::parse();
 
     let meili_client = Client::new(&meili_url, meili_api_key.as_ref())?;
-    let bsky_posts = meili_client.index("bsky-posts");
+    let bsky_posts = meili_client.index(meili_index);
     bsky_posts.set_searchable_attributes(&["text"]).await?;
     bsky_posts
         .set_filterable_attributes(&[

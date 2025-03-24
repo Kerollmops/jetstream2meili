@@ -15,6 +15,8 @@ struct Args {
     meili_url: String,
     #[arg(long)]
     meili_api_key: Option<String>,
+    #[arg(long, default_value = "bsky-posts")]
+    meili_index: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -32,7 +34,7 @@ struct BskyPost {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    let Args { meili_url, meili_api_key } = Args::parse();
+    let Args { meili_url, meili_api_key, meili_index } = Args::parse();
 
     let collection: Nsid = "app.bsky.feed.post".parse().unwrap();
     let config = JetstreamConfig {
@@ -47,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     let jetstream = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
 
-    let bsky_posts = meili_client.index("bsky-posts");
+    let bsky_posts = meili_client.index(meili_index);
     bsky_posts.set_searchable_attributes(&["text"]).await?;
     bsky_posts
         .set_filterable_attributes(&["createdAtTimestamp", "mentions", "tags", "lang"])

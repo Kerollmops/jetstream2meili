@@ -53,44 +53,39 @@ async fn main() -> anyhow::Result<()> {
     let mut cache = HashMap::new();
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(commit) = event {
-            match commit {
+            let (increases, decreases) = match commit {
                 CommitEvent::Create { info: _, commit }
                 | CommitEvent::Update { info: _, commit } => {
                     if let AppBskyFeedLike(_) = commit.record {
                         *cache.entry(commit.info.rkey).or_insert(0) += 1;
                         if cache.len() == 20 {
-                            let (increases, decreases) =
-                                EditDocumentsByFunction::new(mem::take(&mut cache));
-                            if let Some(increases) = increases {
-                                let mut request = request.try_clone().unwrap();
-                                request = request.json(&increases);
-                                request.send().await?;
-                            }
-                            if let Some(decreases) = decreases {
-                                let mut request = request.try_clone().unwrap();
-                                request = request.json(&decreases);
-                                request.send().await?;
-                            }
+                            EditDocumentsByFunction::new(mem::take(&mut cache))
+                        } else {
+                            (None, None)
                         }
+                    } else {
+                        (None, None)
                     }
                 }
                 CommitEvent::Delete { info: _, commit } => {
                     *cache.entry(commit.rkey).or_insert(0) -= 1;
                     if cache.len() == 20 {
-                        let (increases, decreases) =
-                            EditDocumentsByFunction::new(mem::take(&mut cache));
-                        if let Some(increases) = increases {
-                            let mut request = request.try_clone().unwrap();
-                            request = request.json(&increases);
-                            request.send().await?;
-                        }
-                        if let Some(decreases) = decreases {
-                            let mut request = request.try_clone().unwrap();
-                            request = request.json(&decreases);
-                            request.send().await?;
-                        }
+                        EditDocumentsByFunction::new(mem::take(&mut cache))
+                    } else {
+                        (None, None)
                     }
                 }
+            };
+
+            if let Some(increases) = increases {
+                let mut request = request.try_clone().unwrap();
+                request = request.json(&increases);
+                request.send().await?;
+            }
+            if let Some(decreases) = decreases {
+                let mut request = request.try_clone().unwrap();
+                request = request.json(&decreases);
+                request.send().await?;
             }
         }
     }
