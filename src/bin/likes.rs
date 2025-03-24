@@ -11,9 +11,6 @@ use jetstream_oxide::{
 use serde::Serialize;
 use url::Url;
 
-/// The number of likes operations to batch into a single call.
-const BATCH_OPERATIONS: usize = 100;
-
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "http://localhost:7700")]
@@ -22,11 +19,13 @@ struct Args {
     meili_api_key: Option<String>,
     #[arg(long, default_value = "bsky-posts")]
     meili_index: String,
+    #[arg(long, default_value = "100")]
+    cache_size: usize,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    let Args { meili_url, meili_api_key, meili_index } = Args::parse();
+    let Args { meili_url, meili_api_key, meili_index, cache_size } = Args::parse();
 
     let collection: Nsid = "app.bsky.feed.like".parse().unwrap();
     let config = JetstreamConfig {
@@ -58,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
                 | CommitEvent::Update { info: _, commit } => {
                     if let AppBskyFeedLike(_) = commit.record {
                         *cache.entry(commit.info.rkey).or_insert(0) += 1;
-                        if cache.len() == BATCH_OPERATIONS {
+                        if cache.len() == cache_size {
                             EditDocumentsByFunction::new(mem::take(&mut cache))
                         } else {
                             (None, None)
@@ -69,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 CommitEvent::Delete { info: _, commit } => {
                     *cache.entry(commit.rkey).or_insert(0) -= 1;
-                    if cache.len() == BATCH_OPERATIONS {
+                    if cache.len() == cache_size {
                         EditDocumentsByFunction::new(mem::take(&mut cache))
                     } else {
                         (None, None)
