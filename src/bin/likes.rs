@@ -1,4 +1,4 @@
-use std::{collections::HashMap, mem};
+use std::{cmp::Ordering, collections::HashMap, mem};
 
 use atrium_api::record::KnownRecord::AppBskyFeedLike;
 use clap::Parser;
@@ -10,6 +10,9 @@ use jetstream_oxide::{
 };
 use serde::Serialize;
 use url::Url;
+
+/// The number of likes operations to batch into a single call.
+const BATCH_OPERATIONS: usize = 100;
 
 #[derive(Parser)]
 struct Args {
@@ -58,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
                 | CommitEvent::Update { info: _, commit } => {
                     if let AppBskyFeedLike(_) = commit.record {
                         *cache.entry(commit.info.rkey).or_insert(0) += 1;
-                        if cache.len() == 20 {
+                        if cache.len() == BATCH_OPERATIONS {
                             EditDocumentsByFunction::new(mem::take(&mut cache))
                         } else {
                             (None, None)
@@ -69,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 CommitEvent::Delete { info: _, commit } => {
                     *cache.entry(commit.rkey).or_insert(0) -= 1;
-                    if cache.len() == 20 {
+                    if cache.len() == BATCH_OPERATIONS {
                         EditDocumentsByFunction::new(mem::take(&mut cache))
                     } else {
                         (None, None)
@@ -117,23 +120,27 @@ impl EditDocumentsByFunction {
         let mut decreases = HashMap::new();
 
         for (key, change) in likes {
-            if change > 0 {
-                increases.insert(key, change.unsigned_abs());
-            } else if change < 0 {
-                decreases.insert(key, change.unsigned_abs());
+            match change.cmp(&0) {
+                Ordering::Greater => {
+                    increases.insert(key, change.unsigned_abs());
+                }
+                Ordering::Less => {
+                    decreases.insert(key, change.unsigned_abs());
+                }
+                Ordering::Equal => (),
             }
         }
 
         let mut increase_payload = None;
         if !increases.is_empty() {
-            let mut filter = format!("rkey IN [");
+            let mut filter = "rkey IN [".to_string();
             for (is_last, key) in increases.keys().identify_last() {
                 filter.push_str(key);
                 if !is_last {
-                    filter.push_str(",");
+                    filter.push(',');
                 }
             }
-            filter.push_str("]");
+            filter.push(']');
 
             increase_payload = Some(EditDocumentsByFunction {
                 context: EditContext { increases: Some(increases), decreases: None },
@@ -144,14 +151,14 @@ impl EditDocumentsByFunction {
 
         let mut decrease_payload = None;
         if !decreases.is_empty() {
-            let mut filter = format!("rkey IN [");
+            let mut filter = "rkey IN [".to_string();
             for (is_last, key) in decreases.keys().identify_last() {
                 filter.push_str(key);
                 if !is_last {
-                    filter.push_str(",");
+                    filter.push(',');
                 }
             }
-            filter.push_str("]");
+            filter.push(']');
 
             decrease_payload = Some(EditDocumentsByFunction {
                 context: EditContext { increases: None, decreases: Some(decreases) },
