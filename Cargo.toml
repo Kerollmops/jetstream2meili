@@ -8,8 +8,12 @@ anyhow = "1.0.97"
 atrium-api = { version = "0.24.7", default-features = false, features = [
     "namespace-appbsky",
 ] }
+clap = { version = "4.5.32", features = ["derive"] }
+iter-identify_first_last = { version = "0.2.3", default-features = false }
 jetstream-oxide = "0.1.1"
 meilisearch-sdk = "0.28.0"
+reqwest = { version = "0.12.15", features = ["json"] }
 serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 tokio = { version = "1.44.1", features = ["full", "sync", "time"] }
 url = { version = "2.5.4", features = ["serde"] }

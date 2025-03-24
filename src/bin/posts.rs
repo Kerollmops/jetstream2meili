@@ -1,4 +1,5 @@
 use atrium_api::record::KnownRecord::AppBskyFeedPost;
+use clap::Parser;
 use jetstream_oxide::{
     events::{commit::CommitEvent, JetstreamEvent::Commit},
     exports::Nsid,
@@ -7,6 +8,14 @@ use jetstream_oxide::{
 use meilisearch_sdk::client::*;
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long, default_value = "http://localhost:7700")]
+    meili_url: String,
+    #[arg(long)]
+    meili_api_key: Option<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +32,8 @@ struct BskyPost {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
+    let Args { meili_url, meili_api_key } = Args::parse();
+
     let collection: Nsid = "app.bsky.feed.post".parse().unwrap();
     let config = JetstreamConfig {
         endpoint: DefaultJetstreamEndpoints::USEastOne.into(),
@@ -32,8 +43,7 @@ async fn main() -> anyhow::Result<()> {
         cursor: None,
     };
 
-    let meili_client =
-        Client::new("http://localhost:7700", Some("p6aa7k2eUniSASiyeLBDnWkmA8NVuoWkvscqA5NTQKA"))?;
+    let meili_client = Client::new(meili_url, meili_api_key)?;
     let jetstream = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
 
