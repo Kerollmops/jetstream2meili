@@ -10,6 +10,7 @@ atrium-api = { version = "0.24.7", default-features = false, features = [
 ] }
 clap = { version = "4.5.32", features = ["derive"] }
 iter-identify_first_last = { version = "0.2.3", default-features = false }
+itertools = "0.14.0"
 jetstream-oxide = "0.1.1"
 meilisearch-sdk = "0.28.0"
 reqwest = { version = "0.12.15", features = ["json"] }

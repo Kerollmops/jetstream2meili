@@ -6,6 +6,7 @@ use std::{
 
 use atrium_api::record::KnownRecord::{AppBskyFeedLike, AppBskyFeedPost};
 use clap::Parser;
+use itertools::Itertools;
 use jetstream_oxide::{
     events::{commit::CommitEvent, JetstreamEvent::Commit},
     exports::Nsid,
@@ -182,7 +183,10 @@ impl LikesAccumulator {
     }
 
     fn into_editions(self) -> Vec<EditDocumentsByFunction> {
-        self.likes.into_iter().map(|(diff, ids)| EditDocumentsByFunction::new(ids, diff)).collect()
+        self.likes
+            .into_iter()
+            .flat_map(|(diff, ids)| EditDocumentsByFunction::new(ids, diff))
+            .collect()
     }
 }
 
@@ -211,21 +215,27 @@ struct EditContext {
 }
 
 impl EditDocumentsByFunction {
-    fn new(ids: impl IntoIterator<Item = String>, diff: isize) -> EditDocumentsByFunction {
-        let mut filter = format!("rkey IN [");
-        let mut ids = ids.into_iter().peekable();
-        while let Some(id) = ids.next() {
-            filter.push_str(&id);
-            if ids.peek().is_some() {
-                filter.push_str(",");
-            }
-        }
-        filter.push_str("]");
+    fn new(ids: impl IntoIterator<Item = String>, diff: isize) -> Vec<EditDocumentsByFunction> {
+        ids.into_iter()
+            .chunks(300)
+            .into_iter()
+            .map(|ids| {
+                let mut filter = format!("rkey IN [");
+                let mut ids = ids.into_iter().peekable();
+                while let Some(id) = ids.next() {
+                    filter.push_str(&id);
+                    if ids.peek().is_some() {
+                        filter.push_str(",");
+                    }
+                }
+                filter.push_str("]");
 
-        EditDocumentsByFunction {
-            context: EditContext { diff },
-            filter,
-            function: "doc.likes = (doc.likes ?? 0) + context.diff;",
-        }
+                EditDocumentsByFunction {
+                    context: EditContext { diff },
+                    filter,
+                    function: "doc.likes = (doc.likes ?? 0) + context.diff;",
+                }
+            })
+            .collect()
     }
 }
