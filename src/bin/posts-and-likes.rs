@@ -33,11 +33,13 @@ struct Args {
     meili_index: String,
     #[arg(long, default_value = "100")]
     payload_size: NonZeroUsize,
+    #[arg(long, default_value = "2000")]
+    send_likes: NonZeroUsize,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    let Args { meili_url, meili_api_key, meili_index, payload_size } = Args::parse();
+    let Args { meili_url, meili_api_key, meili_index, payload_size, send_likes } = Args::parse();
 
     let post_collection: Nsid = "app.bsky.feed.post".parse().unwrap();
     let like_collection: Nsid = "app.bsky.feed.like".parse().unwrap();
@@ -80,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
                             cache.clear();
                         }
 
-                        if caches_sent % 500 == 0 {
+                        if caches_sent % send_likes.get() == 0 {
                             let editions = mem::take(&mut likes_accumulator).into_editions();
                             eprintln!(
                                 "Sending likes via {}x EditDocumentsByFunction",
