@@ -4,11 +4,18 @@ use std::{
     num::NonZeroUsize,
 };
 
-use atrium_api::record::KnownRecord::{AppBskyFeedLike, AppBskyFeedPost};
+use atrium_api::{
+    app::bsky::feed::post,
+    record::KnownRecord::{AppBskyFeedLike, AppBskyFeedPost},
+};
 use clap::Parser;
 use itertools::Itertools;
 use jetstream_oxide::{
-    events::{commit::CommitEvent, JetstreamEvent::Commit},
+    events::{
+        commit::{CommitEvent, CommitInfo},
+        EventInfo,
+        JetstreamEvent::Commit,
+    },
     exports::Nsid,
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
 };
@@ -27,22 +34,6 @@ struct Args {
     #[arg(long, default_value = "100")]
     payload_size: NonZeroUsize,
 }
-
-#[derive(Serialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct BskyPost {
-    rkey: String,
-    text: String,
-    mentions: Vec<String>,
-    tags: Vec<String>,
-    langs: Vec<String>,
-    created_at_timestamp: i64,
-    // https://bsky.app/profile/did:plc:olsofbpplu7b2hd7amjxrei5/post/3ll2v3rx4ss23
-    link: Url,
-}
-
-#[derive(Deserialize, Debug)]
-struct EmptyBskyPost {}
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
@@ -84,39 +75,7 @@ async fn main() -> anyhow::Result<()> {
             match commit {
                 CommitEvent::Create { info, commit } | CommitEvent::Update { info, commit } => {
                     if let AppBskyFeedPost(record) = commit.record {
-                        let record = record.data;
-                        let link = format!(
-                            "https://bsky.app/profile/{did}/post/{rkey}",
-                            did = info.did.as_str(),
-                            rkey = commit.info.rkey,
-                        );
-                        let post = BskyPost {
-                            rkey: commit.info.rkey.to_string(),
-                            langs: record.langs.map_or_else(Vec::new, |langs| {
-                                langs
-                                    .into_iter()
-                                    .map(|lang| lang.as_ref().as_str().to_string())
-                                    .collect()
-                            }),
-                            text: record.text,
-                            mentions: record.entities.map_or_else(Vec::new, |entities| {
-                                entities
-                                    .into_iter()
-                                    .flat_map(|entity| {
-                                        if entity.data.r#type == "mention" {
-                                            Some(entity.data.value)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect()
-                            }),
-                            tags: record.tags.unwrap_or_default(),
-                            created_at_timestamp: record.created_at.as_ref().timestamp(),
-                            link: Url::parse(&link).unwrap(),
-                        };
-
-                        cache.push(post);
+                        cache.push(BskyPost::new(info, commit.info, record.data));
 
                         if cache.len() == payload_size.get() {
                             bsky_posts.add_or_update(&cache, Some("rkey")).await?;
@@ -131,21 +90,38 @@ async fn main() -> anyhow::Result<()> {
                                 request.send().await?;
                             }
                         }
-                    } else if let AppBskyFeedLike(_) = commit.record {
+                    } else if let AppBskyFeedLike(record) = commit.record {
+                        // at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
+                        let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
+
                         if bsky_posts
-                            .get_document::<EmptyBskyPost>(&commit.info.rkey)
+                            .get_document::<EmptyBskyPost>(post_rkey)
                             .await
                             .map(Some)
                             .or_else(convert_invalid_request_to_none)?
                             .is_some()
                         {
-                            likes_accumulator.increase(commit.info.rkey);
+                            likes_accumulator.increase(post_rkey.to_string());
                         }
                     }
                 }
                 CommitEvent::Delete { info: _, commit } => {
-                    let rkey = commit.rkey.to_string();
-                    bsky_posts.delete_document(rkey).await.unwrap();
+                    if commit.collection == post_collection {
+                        let rkey = commit.rkey.to_string();
+                        bsky_posts.delete_document(rkey).await?;
+                    } /* else if commit.collection == like_collection {
+                          at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
+                          let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
+                          if bsky_posts
+                              .get_document::<EmptyBskyPost>(post_rkey)
+                              .await
+                              .map(Some)
+                              .or_else(convert_invalid_request_to_none)?
+                              .is_some()
+                          {
+                              likes_accumulator.decrease(post_rkey.to_string());
+                          }
+                      } */
                 }
             }
         }
@@ -153,6 +129,55 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct BskyPost {
+    rkey: String,
+    text: String,
+    mentions: Vec<String>,
+    tags: Vec<String>,
+    langs: Vec<String>,
+    created_at: String,
+    created_at_timestamp: u64,
+    // https://bsky.app/profile/did:plc:olsofbpplu7b2hd7amjxrei5/post/3ll2v3rx4ss23
+    link: Url,
+}
+
+impl BskyPost {
+    pub fn new(
+        event_info: EventInfo,
+        commit_info: CommitInfo,
+        record_data: post::RecordData,
+    ) -> Self {
+        let link = format!(
+            "https://bsky.app/profile/{did}/post/{rkey}",
+            did = event_info.did.as_str(),
+            rkey = commit_info.rkey,
+        );
+
+        BskyPost {
+            rkey: commit_info.rkey.to_string(),
+            langs: record_data.langs.map_or_else(Vec::new, |langs| {
+                langs.into_iter().map(|lang| lang.as_ref().as_str().to_string()).collect()
+            }),
+            text: record_data.text,
+            mentions: record_data.entities.map_or_else(Vec::new, |entities| {
+                entities
+                    .into_iter()
+                    .flat_map(|e| (e.data.r#type == "mention").then_some(e.data.value))
+                    .collect()
+            }),
+            tags: record_data.tags.unwrap_or_default(),
+            created_at: record_data.created_at.as_ref().to_string(),
+            created_at_timestamp: event_info.time_us,
+            link: link.parse().unwrap(),
+        }
+    }
+}
+
+#[derive(Deserialize, Debug)]
+struct EmptyBskyPost {}
 
 #[derive(Debug, Default)]
 struct LikesAccumulator {
@@ -220,15 +245,15 @@ impl EditDocumentsByFunction {
             .chunks(300)
             .into_iter()
             .map(|ids| {
-                let mut filter = format!("rkey IN [");
+                let mut filter = "rkey IN [".to_string();
                 let mut ids = ids.into_iter().peekable();
                 while let Some(id) = ids.next() {
                     filter.push_str(&id);
                     if ids.peek().is_some() {
-                        filter.push_str(",");
+                        filter.push(',');
                     }
                 }
-                filter.push_str("]");
+                filter.push(']');
 
                 EditDocumentsByFunction {
                     context: EditContext { diff },
