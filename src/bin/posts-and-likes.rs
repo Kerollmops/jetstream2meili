@@ -84,7 +84,13 @@ async fn main() -> anyhow::Result<()> {
                         }
 
                         if cache_sent == 500 {
-                            for editions in mem::take(&mut likes_accumulator).into_editions() {
+                            cache_sent = 0;
+                            let editions = mem::take(&mut likes_accumulator).into_editions();
+                            eprintln!(
+                                "Sending likes via {}x EditDocumentsByFunction",
+                                editions.len()
+                            );
+                            for editions in editions {
                                 let mut request = editions_request.try_clone().unwrap();
                                 request = request.json(&editions);
                                 request.send().await?;
