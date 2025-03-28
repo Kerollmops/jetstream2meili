@@ -51,11 +51,8 @@ async fn main() -> anyhow::Result<()> {
 
     let meili_client = Client::new(&meili_url, meili_api_key.as_ref())?;
     let raw_client = reqwest::Client::new();
-    let url = Url::parse(&meili_url)?
-        .join("indexes")?
-        .join(&meili_index)?
-        .join("documents")?
-        .join("edit")?;
+    let mut url: Url = meili_url.parse()?;
+    url.set_path(&format!("indexes/{meili_index}/documents/edit"));
     let mut editions_request = raw_client.post(url);
     if let Some(key) = meili_api_key {
         editions_request = editions_request.bearer_auth(key);
@@ -68,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("Listening for '{:?}' and '{:?}' events", post_collection, like_collection);
 
     let mut cache = Vec::new();
-    let mut cache_sent: usize = 0;
+    let mut caches_sent: usize = 0;
     let mut likes_accumulator = LikesAccumulator::default();
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(commit) = event {
@@ -79,12 +76,11 @@ async fn main() -> anyhow::Result<()> {
 
                         if cache.len() == payload_size.get() {
                             bsky_posts.add_or_update(&cache, Some("rkey")).await?;
-                            cache_sent += 1;
+                            caches_sent += 1;
                             cache.clear();
                         }
 
-                        if cache_sent == 500 {
-                            cache_sent = 0;
+                        if caches_sent % 500 == 0 {
                             let editions = mem::take(&mut likes_accumulator).into_editions();
                             eprintln!(
                                 "Sending likes via {}x EditDocumentsByFunction",
@@ -93,7 +89,9 @@ async fn main() -> anyhow::Result<()> {
                             for editions in editions {
                                 let mut request = editions_request.try_clone().unwrap();
                                 request = request.json(&editions);
-                                request.send().await?;
+                                if let Err(err) = request.send().await?.error_for_status() {
+                                    eprintln!("Error sending likes: {:?}", err);
+                                }
                             }
                         }
                     } else if let AppBskyFeedLike(record) = commit.record {
