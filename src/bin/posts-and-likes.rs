@@ -85,7 +85,8 @@ async fn main() -> anyhow::Result<()> {
                         }
 
                         if send_likes.map_or(false, |sl| caches_sent % sl.get() == 0) {
-                            for rkeys in take(&mut outdateds).into_iter().chunks(100).into_iter() {
+                            let size = 100;
+                            for rkeys in take(&mut outdateds).into_iter().chunks(size).into_iter() {
                                 let rkeys: Vec<_> = rkeys.collect();
                                 let values: Vec<usize> = redis.mget(rkeys.clone()).await?;
                                 let updated: Vec<_> = rkeys
@@ -94,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
                                     .map(|(rkey, likes)| BskyPostLikesOnly { rkey, likes })
                                     .collect();
                                 bsky_posts.add_or_update(&updated, None).await?;
+                                eprintln!("Sent {size} likes updates");
                             }
                         }
                     } else if let AppBskyFeedLike(record) = commit.record {
