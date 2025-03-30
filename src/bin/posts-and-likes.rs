@@ -35,11 +35,15 @@ struct Args {
     payload_size: NonZeroUsize,
     #[arg(long, default_value = "2000")]
     send_likes: NonZeroUsize,
+    #[arg(long)]
+    disable_likes: bool,
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
-    let Args { meili_url, meili_api_key, meili_index, payload_size, send_likes } = Args::parse();
+    let Args { meili_url, meili_api_key, meili_index, payload_size, send_likes, disable_likes } =
+        Args::parse();
+    let send_likes = (!disable_likes).then_some(send_likes);
 
     let post_collection: Nsid = "app.bsky.feed.post".parse().unwrap();
     let like_collection: Nsid = "app.bsky.feed.like".parse().unwrap();
@@ -82,7 +86,9 @@ async fn main() -> anyhow::Result<()> {
                             cache.clear();
                         }
 
-                        if caches_sent % send_likes.get() == 0 {
+                        if send_likes
+                            .map_or(false, |send_likes| caches_sent % send_likes.get() == 0)
+                        {
                             let editions = mem::take(&mut likes_accumulator).into_editions();
                             eprintln!(
                                 "Sending likes via {}x EditDocumentsByFunction",
@@ -97,17 +103,19 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     } else if let AppBskyFeedLike(record) = commit.record {
-                        // at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
-                        let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
+                        if send_likes.is_some() {
+                            // at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
+                            let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
 
-                        if bsky_posts
-                            .get_document::<EmptyBskyPost>(post_rkey)
-                            .await
-                            .map(Some)
-                            .or_else(convert_invalid_request_to_none)?
-                            .is_some()
-                        {
-                            likes_accumulator.increase(post_rkey.to_string());
+                            if bsky_posts
+                                .get_document::<EmptyBskyPost>(post_rkey)
+                                .await
+                                .map(Some)
+                                .or_else(convert_invalid_request_to_none)?
+                                .is_some()
+                            {
+                                likes_accumulator.increase(post_rkey.to_string());
+                            }
                         }
                     }
                 }
