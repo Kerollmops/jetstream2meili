@@ -1,20 +1,15 @@
 use std::{collections::HashSet, num::NonZeroUsize};
 
-use atrium_api::{app::bsky::feed::post, record::KnownRecord::AppBskyFeedLike};
+use atrium_api::record::KnownRecord::AppBskyFeedLike;
 use clap::Parser;
 use jetstream_oxide::{
-    events::{
-        commit::{CommitEvent, CommitInfo},
-        EventInfo,
-        JetstreamEvent::Commit,
-    },
+    events::{commit::CommitEvent, JetstreamEvent::Commit},
     exports::Nsid,
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
 };
 use meilisearch_sdk::client::*;
 use redis::AsyncCommands as _;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 #[derive(Parser)]
 struct Args {
@@ -97,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
                         at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
                         let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
                         if bsky_posts
-                            .get_document::<EmptyBskyPost>(post_rkey)
+                            .get_document::<BskyPostLikesOnly>(post_rkey)
                             .await
                             .map(Some)
                             .or_else(convert_invalid_request_to_none)?
@@ -112,55 +107,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct BskyPost {
-    rkey: String,
-    text: String,
-    mentions: Vec<String>,
-    tags: Vec<String>,
-    langs: Vec<String>,
-    created_at: String,
-    created_at_timestamp: u64,
-    // https://bsky.app/profile/did:plc:olsofbpplu7b2hd7amjxrei5/post/3ll2v3rx4ss23
-    link: Url,
-    #[serde(skip_serializing_if = "Option::is_some")]
-    likes: Option<usize>,
-}
-
-impl BskyPost {
-    pub fn new(
-        event_info: EventInfo,
-        commit_info: CommitInfo,
-        record_data: post::RecordData,
-    ) -> Self {
-        let link = format!(
-            "https://bsky.app/profile/{did}/post/{rkey}",
-            did = event_info.did.as_str(),
-            rkey = commit_info.rkey,
-        );
-
-        BskyPost {
-            rkey: commit_info.rkey.to_string(),
-            langs: record_data.langs.map_or_else(Vec::new, |langs| {
-                langs.into_iter().map(|lang| lang.as_ref().as_str().to_string()).collect()
-            }),
-            text: record_data.text,
-            mentions: record_data.entities.map_or_else(Vec::new, |entities| {
-                entities
-                    .into_iter()
-                    .flat_map(|e| (e.data.r#type == "mention").then_some(e.data.value))
-                    .collect()
-            }),
-            tags: record_data.tags.unwrap_or_default(),
-            created_at: record_data.created_at.as_ref().to_string(),
-            created_at_timestamp: event_info.time_us,
-            link: link.parse().unwrap(),
-            likes: None,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
