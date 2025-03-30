@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, HashSet},
-    mem,
-    num::NonZeroUsize,
-};
+use std::{collections::HashSet, mem::take, num::NonZeroUsize};
 
 use atrium_api::{
     app::bsky::feed::post,
@@ -20,6 +16,7 @@ use jetstream_oxide::{
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
 };
 use meilisearch_sdk::client::*;
+use redis::AsyncCommands as _;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -55,14 +52,15 @@ async fn main() -> anyhow::Result<()> {
         cursor: None,
     };
 
+    let redis = redis::Client::open("redis://127.0.0.1/")?;
+    let mut redis = redis.get_multiplexed_async_connection().await?;
     let meili_client = Client::new(&meili_url, meili_api_key.as_ref())?;
-    let raw_client = reqwest::Client::new();
-    let mut url: Url = meili_url.parse()?;
-    url.set_path(&format!("indexes/{meili_index}/documents/edit"));
-    let mut editions_request = raw_client.post(url);
-    if let Some(key) = meili_api_key {
-        editions_request = editions_request.bearer_auth(key);
-    }
+
+    let answer: String = redis.ping().await?;
+    anyhow::ensure!(
+        answer == "PONG",
+        "Server didn't anwsered PONG. Is there a redis/valkey server running?"
+    );
 
     let jetstream = JetstreamConnector::new(config)?;
     let receiver = jetstream.connect().await?;
@@ -72,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut cache = Vec::new();
     let mut caches_sent: usize = 0;
-    let mut likes_accumulator = LikesAccumulator::default();
+    let mut outdateds = HashSet::new();
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(commit) = event {
             match commit {
@@ -86,20 +84,16 @@ async fn main() -> anyhow::Result<()> {
                             cache.clear();
                         }
 
-                        if send_likes
-                            .map_or(false, |send_likes| caches_sent % send_likes.get() == 0)
-                        {
-                            let editions = mem::take(&mut likes_accumulator).into_editions();
-                            eprintln!(
-                                "Sending likes via {}x EditDocumentsByFunction",
-                                editions.len()
-                            );
-                            for editions in editions {
-                                let mut request = editions_request.try_clone().unwrap();
-                                request = request.json(&editions);
-                                if let Err(err) = request.send().await?.error_for_status() {
-                                    eprintln!("Error sending likes: {:?}", err);
-                                }
+                        if send_likes.map_or(false, |sl| caches_sent % sl.get() == 0) {
+                            for rkeys in take(&mut outdateds).into_iter().chunks(100).into_iter() {
+                                let rkeys: Vec<_> = rkeys.collect();
+                                let values: Vec<usize> = redis.mget(rkeys.clone()).await?;
+                                let updated: Vec<_> = rkeys
+                                    .into_iter()
+                                    .zip(values)
+                                    .map(|(rkey, likes)| BskyPostLikesOnly { rkey, likes })
+                                    .collect();
+                                bsky_posts.add_or_update(&updated, None).await?;
                             }
                         }
                     } else if let AppBskyFeedLike(record) = commit.record {
@@ -107,14 +101,15 @@ async fn main() -> anyhow::Result<()> {
                             // at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
                             let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
 
-                            if bsky_posts
-                                .get_document::<EmptyBskyPost>(post_rkey)
+                            if let Some(BskyPost { likes, .. }) = bsky_posts
+                                .get_document(post_rkey)
                                 .await
                                 .map(Some)
                                 .or_else(convert_invalid_request_to_none)?
-                                .is_some()
                             {
-                                likes_accumulator.increase(post_rkey.to_string());
+                                let base = likes.unwrap_or(0);
+                                let () = redis.set_nx(post_rkey, base).await?;
+                                let _count: isize = redis.incr(post_rkey, 1).await?;
                             }
                         }
                     }
@@ -144,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct BskyPost {
     rkey: String,
@@ -156,6 +151,8 @@ struct BskyPost {
     created_at_timestamp: u64,
     // https://bsky.app/profile/did:plc:olsofbpplu7b2hd7amjxrei5/post/3ll2v3rx4ss23
     link: Url,
+    #[serde(skip_serializing_if = "Option::is_some")]
+    likes: Option<usize>,
 }
 
 impl BskyPost {
@@ -186,47 +183,16 @@ impl BskyPost {
             created_at: record_data.created_at.as_ref().to_string(),
             created_at_timestamp: event_info.time_us,
             link: link.parse().unwrap(),
+            likes: None,
         }
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct EmptyBskyPost {}
-
-#[derive(Debug, Default)]
-struct LikesAccumulator {
-    likes: BTreeMap<isize, HashSet<String>>,
-}
-
-impl LikesAccumulator {
-    fn increase(&mut self, id: String) {
-        self.change(id, |like| like + 1);
-    }
-
-    // fn decrease(&mut self, id: String) {
-    //     self.change(id, |like| like - 1);
-    // }
-
-    fn change(&mut self, id: String, f: impl Fn(isize) -> isize) {
-        match self.likes.iter_mut().find(|(_, ids)| ids.contains(&id)) {
-            Some((&like, ids)) => {
-                ids.remove(&id);
-                if f(like) != 0 {
-                    self.likes.entry(f(like)).or_default().insert(id);
-                }
-            }
-            None => {
-                self.likes.entry(1).or_default().insert(id);
-            }
-        }
-    }
-
-    fn into_editions(self) -> Vec<EditDocumentsByFunction> {
-        self.likes
-            .into_iter()
-            .flat_map(|(diff, ids)| EditDocumentsByFunction::new(ids, diff))
-            .collect()
-    }
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct BskyPostLikesOnly {
+    rkey: String,
+    likes: usize,
 }
 
 fn convert_invalid_request_to_none<T>(
@@ -238,43 +204,5 @@ fn convert_invalid_request_to_none<T>(
             _ => Ok(None),
         },
         _otherwise => Err(err),
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct EditDocumentsByFunction {
-    context: EditContext,
-    filter: String,
-    function: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct EditContext {
-    diff: isize,
-}
-
-impl EditDocumentsByFunction {
-    fn new(ids: impl IntoIterator<Item = String>, diff: isize) -> Vec<EditDocumentsByFunction> {
-        ids.into_iter()
-            .chunks(300)
-            .into_iter()
-            .map(|ids| {
-                let mut filter = "rkey IN [".to_string();
-                let mut ids = ids.into_iter().peekable();
-                while let Some(id) = ids.next() {
-                    filter.push_str(&id);
-                    if ids.peek().is_some() {
-                        filter.push(',');
-                    }
-                }
-                filter.push(']');
-
-                EditDocumentsByFunction {
-                    context: EditContext { diff },
-                    filter,
-                    function: "doc.likes = (doc.likes ?? 0) + context.diff;",
-                }
-            })
-            .collect()
     }
 }
