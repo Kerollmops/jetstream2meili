@@ -103,14 +103,13 @@ async fn main() -> anyhow::Result<()> {
                             // at://did:plc:wa7b35aakoll7hugkrjtf3xf/app.bsky.feed.post/3l3pte3p2e325
                             let (_, post_rkey) = record.data.subject.uri.rsplit_once('/').unwrap();
 
-                            if let Some(BskyPost { likes, .. }) = bsky_posts
+                            if let Some(BskyPostLikesOnly { rkey: _, likes }) = bsky_posts
                                 .get_document(post_rkey)
                                 .await
                                 .map(Some)
                                 .or_else(convert_invalid_request_to_none)?
                             {
-                                let base = likes.unwrap_or(0);
-                                let () = redis.set_nx(post_rkey, base).await?;
+                                let () = redis.set_nx(post_rkey, likes).await?;
                                 let _count: isize = redis.incr(post_rkey, 1).await?;
                             }
                         }
@@ -190,10 +189,11 @@ impl BskyPost {
     }
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct BskyPostLikesOnly {
     rkey: String,
+    #[serde(default)]
     likes: usize,
 }
 
