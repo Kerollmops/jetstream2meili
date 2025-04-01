@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{collections::HashMap, num::NonZeroUsize};
 
 use atrium_api::{app::bsky::feed::post, record::KnownRecord::AppBskyFeedPost};
 use clap::Parser;
@@ -23,7 +23,7 @@ struct Args {
     meili_api_key: Option<String>,
     #[arg(long, default_value = "bsky-posts")]
     meili_index: String,
-    #[arg(long, default_value = "100")]
+    #[arg(long, default_value = "500")]
     payload_size: NonZeroUsize,
 }
 
@@ -47,24 +47,42 @@ async fn main() -> anyhow::Result<()> {
 
     eprintln!("Listening for '{:?}' events", post_collection);
 
-    let mut cache = Vec::new();
+    let mut cache = HashMap::new();
     while let Ok(event) = receiver.recv_async().await {
         if let Commit(commit) = event {
             match commit {
                 CommitEvent::Create { info, commit } | CommitEvent::Update { info, commit } => {
                     if let AppBskyFeedPost(record) = commit.record {
-                        cache.push(BskyPost::new(info, commit.info, record.data));
+                        let post = BskyPost::new(info, commit.info, record.data);
+                        cache.insert(post.rkey.clone(), Some(post));
 
                         if cache.len() == payload_size.get() {
-                            bsky_posts.add_or_update(&cache, Some("rkey")).await?;
-                            cache.clear();
+                            let (posts, deletions) =
+                                partition_additions_and_deletions(cache.drain());
+                            if !posts.is_empty() {
+                                bsky_posts.add_or_update(&posts, Some("rkey")).await?;
+                            }
+                            if !deletions.is_empty() {
+                                bsky_posts.delete_documents(&deletions).await?;
+                            }
                         }
                     }
                 }
                 CommitEvent::Delete { info: _, commit } => {
                     if commit.collection == post_collection {
                         let rkey = commit.rkey.to_string();
-                        bsky_posts.delete_document(rkey).await?;
+                        cache.insert(rkey, None);
+
+                        if cache.len() == payload_size.get() {
+                            let (posts, deletions) =
+                                partition_additions_and_deletions(cache.drain());
+                            if !posts.is_empty() {
+                                bsky_posts.add_or_update(&posts, Some("rkey")).await?;
+                            }
+                            if !deletions.is_empty() {
+                                bsky_posts.delete_documents(&deletions).await?;
+                            }
+                        }
                     }
                 }
             }
@@ -72,6 +90,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn partition_additions_and_deletions(
+    ops: impl Iterator<Item = (String, Option<BskyPost>)>,
+) -> (Vec<BskyPost>, Vec<String>) {
+    let mut posts = Vec::new();
+    let mut deletions = Vec::new();
+
+    for (rkey, post) in ops {
+        match post {
+            Some(post) => posts.push(post),
+            None => deletions.push(rkey),
+        }
+    }
+
+    (posts, deletions)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
