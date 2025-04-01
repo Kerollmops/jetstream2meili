@@ -70,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
                         {
                             outdated.insert(post_rkey.to_string());
 
+                            let likes = likes.unwrap_or(0);
                             let () = redis.set_nx(post_rkey, likes).await?;
                             let _count: isize = redis.incr(post_rkey, 1).await?;
                         }
@@ -80,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
                             let updated: Vec<_> = rkeys
                                 .into_iter()
                                 .zip(values)
-                                .map(|(rkey, likes)| BskyPostLikesOnly { rkey, likes })
+                                .map(|(rkey, likes)| BskyPostLikesOnly { rkey, likes: Some(likes) })
                                 .collect();
                             bsky_posts.add_or_update(&updated, None).await?;
                             eprintln!("Sent {payload_size} likes updates.");
@@ -114,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
 struct BskyPostLikesOnly {
     rkey: String,
     #[serde(default)]
-    likes: usize,
+    likes: Option<usize>,
 }
 
 fn convert_invalid_request_to_none<T>(
