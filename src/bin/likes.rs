@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
                                 .zip(values)
                                 .map(|(rkey, likes)| BskyPostLikesOnly { rkey, likes: Some(likes) })
                                 .collect();
-                            bsky_posts.add_or_update(&updated, None).await?;
+                            bsky_posts.add_or_update(&updated, Some("rkey")).await?;
                             eprintln!("Sent {payload_size} likes updates.");
                         }
                     }
