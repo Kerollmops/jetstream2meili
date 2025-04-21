@@ -1,5 +1,4 @@
 use clap::Parser;
-use meilisearch_sdk::client::*;
 use serde_json::json;
 use url::Url;
 
@@ -17,22 +16,108 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let Args { meili_url, meili_api_key, meili_index } = Args::parse();
 
-    let meili_client = Client::new(&meili_url, meili_api_key.as_ref())?;
-    let bsky_posts = meili_client.index(meili_index);
-    bsky_posts.set_searchable_attributes(&["text"]).await?;
-    bsky_posts
-        .set_filterable_attributes(&[
+    let meili_client = reqwest::Client::new();
+    let mut request = meili_client.patch(format!("{meili_url}/indexes/{meili_index}/settings"));
+    if let Some(api_key) = meili_api_key.as_ref() {
+        request = request.bearer_auth(api_key);
+    };
+
+    let request = request.json(&json!({
+      "displayedAttributes": [
+        "*"
+      ],
+      "searchableAttributes": [
+        "text"
+      ],
+      "filterableAttributes": [
+        {
+          "attributePatterns": [
             "rkey",
-            "createdAtTimestamp",
+            "likesIds"
+          ],
+          "features": {
+            "facetSearch": false,
+            "filter": {
+              "equality": true,
+              "comparison": false
+            }
+          }
+        },
+        {
+          "attributePatterns": [
             "mentions",
-            "tags",
-            "lang",
-            "likes",
-        ])
-        .await?;
-    bsky_posts.set_sortable_attributes(&["createdAtTimestamp"]).await?;
-    bsky_posts.set_proximity_precision("byAttribute".into()).await.unwrap();
-    eprintln!("Updated the settings");
+            "lang", // langs in fact
+            "tags"
+          ],
+          "features": {
+            "facetSearch": true,
+            "filter": {
+              "equality": true,
+              "comparison": false
+            }
+          }
+        },
+        {
+          "attributePatterns": [
+            "createdAtTimestamp",
+            "likes"
+          ],
+          "features": {
+            "facetSearch": false,
+            "filter": {
+              "equality": true,
+              "comparison": true
+            }
+          }
+        }
+      ],
+      "sortableAttributes": [
+        "createdAtTimestamp",
+        "likes"
+      ],
+      "rankingRules": [
+        "words",
+        "typo",
+        "proximity",
+        "attribute",
+        "sort",
+        "exactness"
+      ],
+      "stopWords": [],
+      "nonSeparatorTokens": [],
+      "separatorTokens": [],
+      "dictionary": [],
+      "synonyms": {},
+      "distinctAttribute": null,
+      "proximityPrecision": "byAttribute",
+      "typoTolerance": {
+        "enabled": true,
+        "minWordSizeForTypos": {
+          "oneTypo": 5,
+          "twoTypos": 9
+        },
+        "disableOnWords": [],
+        "disableOnAttributes": []
+      },
+      "faceting": {
+        "maxValuesPerFacet": 100,
+        "sortFacetValuesBy": {
+          "*": "alpha"
+        }
+      },
+      "pagination": {
+        "maxTotalHits": 1000
+      },
+      "embedders": {},
+      "searchCutoffMs": null,
+      "localizedAttributes": null,
+      "facetSearch": true,
+      "prefixSearch": "indexingTime",
+      "executeAfterUpdate": include_str!("apply_likes.rhai"),
+    }));
+
+    let response = request.send().await?;
+    response.error_for_status().unwrap();
 
     let raw_client = reqwest::Client::new();
     let url = Url::parse(&meili_url)?.join("experimental-features")?;
