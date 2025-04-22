@@ -4,7 +4,7 @@ if context != () {
     // it means that this document does not exist in the database
     // and the first operation we are trying to perform is a likes
     // modification, therefore, this document must be deleted.
-    if doc.text == () {
+    if "text" !in doc {
         doc = ();
         return;
     }
