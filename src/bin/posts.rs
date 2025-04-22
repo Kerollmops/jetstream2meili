@@ -1,14 +1,16 @@
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
-use atrium_api::{app::bsky::feed::post, record::KnownRecord::AppBskyFeedPost};
+use atrium_api::app::bsky::embed::external::ExternalData;
+use atrium_api::app::bsky::feed::post::{self, RecordEmbedRefs};
+use atrium_api::record::KnownRecord::AppBskyFeedPost;
+use atrium_api::types::Union;
 use clap::Parser;
+use jetstream_oxide::events::commit::{CommitEvent, CommitInfo};
+use jetstream_oxide::events::EventInfo;
+use jetstream_oxide::events::JetstreamEvent::Commit;
+use jetstream_oxide::exports::Nsid;
 use jetstream_oxide::{
-    events::{
-        commit::{CommitEvent, CommitInfo},
-        EventInfo,
-        JetstreamEvent::Commit,
-    },
-    exports::Nsid,
     DefaultJetstreamEndpoints, JetstreamCompression, JetstreamConfig, JetstreamConnector,
 };
 use meilisearch_sdk::client::*;
@@ -113,6 +115,7 @@ fn partition_additions_and_deletions(
 struct BskyPost {
     rkey: String,
     text: String,
+    embed: Option<Embed>,
     mentions: Vec<String>,
     tags: Vec<String>,
     langs: Vec<String>,
@@ -122,6 +125,14 @@ struct BskyPost {
     link: Url,
     #[serde(skip_serializing_if = "Option::is_some")]
     likes: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Embed {
+    title: String,
+    description: String,
+    uri: String,
 }
 
 impl BskyPost {
@@ -136,12 +147,24 @@ impl BskyPost {
             rkey = commit_info.rkey,
         );
 
+        let embed = record_data.embed.and_then(|u| match u {
+            Union::Refs(rer) => Some(rer),
+            Union::Unknown(_) => None,
+        });
+
         BskyPost {
             rkey: commit_info.rkey.to_string(),
             langs: record_data.langs.map_or_else(Vec::new, |langs| {
                 langs.into_iter().map(|lang| lang.as_ref().as_str().to_string()).collect()
             }),
             text: record_data.text,
+            image: embed.and_then(|rer| match rer {
+                RecordEmbedRefs::AppBskyEmbedExternalMain(main) => {
+                    let ExternalData { description, title, uri, .. } = main.data.external.data;
+                    Some(dbg!(Embed { title, description, uri }))
+                }
+                _ => None,
+            }),
             mentions: record_data.entities.map_or_else(Vec::new, |entities| {
                 entities
                     .into_iter()

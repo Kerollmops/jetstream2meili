@@ -27,7 +27,9 @@ async fn main() -> anyhow::Result<()> {
         "*"
       ],
       "searchableAttributes": [
-        "text"
+        "text",
+        "embed.title",
+        "embed.description"
       ],
       "filterableAttributes": [
         {
